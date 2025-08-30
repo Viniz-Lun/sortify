@@ -31,6 +31,10 @@ int endsWith(char* string, char* endString){
 	return 1;
 }
 
+// Checks if the string ends with a certain substring inside a list of strings, sizeOfList is number of strings present
+// in said file.
+// The corresponding first match string is copied on the address pointed by resultSuffix (limited to 7 bytes).
+// return value 1 means match, 0 means no match
 int endsWithResult(char* string, char** listOfStrings, int sizeOfList, char* resultSuffix){
 	for(int i = 0; (i < sizeOfList); i++ ){
 		if( endsWith(string, listOfStrings[i]) ){
@@ -44,16 +48,15 @@ int endsWithResult(char* string, char** listOfStrings, int sizeOfList, char* res
 int main(int argc, char** argv){
 	int wd, inotify_fd;
 	int fd;
-	int len, o, isTens;
-	//int numDir = 1;
-	int numImageSuffix = 5;
+	int len, o, isTens, listNum;
+	
+	char *imagesSuffix[] = {".png", ".jpg", ".webp", ".jpeg", ".gif", "svg", 0};
+	int numImageSuffix = 6;
 
-	char *download = "/home/vin/Downloads/";
-	char *imagesSuffix[] = {".png", ".jpg", ".webp", ".jpeg", ".gif", 0};
+	char *image_dir = "images/";
 	char *pdfSufix = ".pdf";
-	char *new_dir = "images/";
-	//char (directories[16])[256] = {"images/", ""};
-	//char **suffixes[16] = {0};
+	char *pdf_dir = "pdfs/";
+	char *new_dir = "";
 	char endString[8];
 	char new_name[256] = "";
 	char full_path_old[1024] = "";
@@ -63,10 +66,17 @@ int main(int argc, char** argv){
 	char toFinishConfirm[256] = "";
 	int toFinishCookie = 0;
 	
-	//suffixes[0] = &imagesSuffix;
-
 	struct inotify_event *event;
 	struct dirent dd = {0};
+
+	char download[512] = "/home/";
+	strcat(download, getlogin());
+	strcat(download, "/Downloads/");
+
+	//int numDir = 1;
+	//char (directories[16])[256] = {"images/", ""};
+	//char **suffixes[16] = {0};
+	//suffixes[0] = &imagesSuffix;
 	//if(argc > 1){
 	//	if( !strcmp(argv[0], "h") || !strcmp(argv[0], "-h") ){
 	//		printf("help haha\n");
@@ -79,16 +89,19 @@ int main(int argc, char** argv){
 	//			do{
 	//			printf("Sufix to forward to \"%s\":\n", directories[numDir]);
 	//			}while(scanf("%8s", suffixes)
-
 	//		}
 	//	}
 	//}
+
+	
+// Initialize inotify instance
 	inotify_fd = inotify_init();
 	if(inotify_fd < 0){
 		perror("Error in the creation of inotify instance");
 		exit(1);
 	}
 
+// Create inotify watcher on directory, to scan for creation, finished file write and attribute change.
 	wd = inotify_add_watch(inotify_fd, download, IN_CREATE | IN_CLOSE_WRITE | IN_ATTRIB);
 	if(wd < 0){
 		perror("Error in the creation of watch item for directory Downloads");
@@ -96,29 +109,43 @@ int main(int argc, char** argv){
 		exit(2);
 	}
 
+// Set SIGINT to call function to close all file descriptors used by program.
 	signal(SIGINT, graceful);
 
 	printf("Created inotify instance and checking Downloads folder, entering cycle...\n");
 
+// Start event listening cycle, event gets saved to buffer and accessed with event pointer.
 	while( read(inotify_fd, &buffer, sizeof(struct inotify_event) + 256) > 0 ){
 		event = (struct inotify_event*) buffer;
+// This if is kinda useless but why not check.
 		if( event->wd == wd ){
+// If the file is a temporary file to facilitate the download we ignore it.
 			if( endsWith(event->name, ".part") || endsWith(event->name, ".tmp") ) continue;
+// We store the name of the file created and wait for another event.
 			if( event->mask == IN_CREATE ) {
 				strcpy(toFinish, event->name);
 				continue;
 			}
+// If the file we *just* stored the value for was written to, we store that same value at a different variable
+// and wait for another event.
 			if( event->mask == IN_CLOSE_WRITE && !strcmp( event->name, toFinish) ){
 				strcpy(toFinishConfirm, toFinish);
 				continue;
 			}
+// If the event is that of an attribute change on the file we noticed the behaviour:
+// CREATE->WRITE->ATTRIBUTE_CHANGE
+// Then we assume the file has finished its download sequence.
+// So we can go ahead and check if it fits the conditions to get moved.
 			if( event->mask != IN_ATTRIB || strcmp(event->name, toFinishConfirm) ) continue;
 		}
-		toFinish[0] = 0;
-		toFinishConfirm[0] = 0;
-
+// Reset variables.
+		toFinish[0] = '\0';
+		toFinishConfirm[0] = '\0';
+		listNum = 0;
 		printf("Finished File download detected: \"%s\"\n", event->name);
-		if( endsWithResult(event->name, imagesSuffix, numImageSuffix, endString) ){
+// Check if it ends with any relevant suffix.
+		if( (endsWithResult(event->name, imagesSuffix, numImageSuffix, endString) && (listNum = 1)) ||
+				(endsWith(event->name, pdfSufix) && (listNum = 2)) ){
 			printf("File is a %s\n", endString);
 
 			strcpy(full_path_old, download);
@@ -126,41 +153,50 @@ int main(int argc, char** argv){
 
 			printf("Old path: \"%s\"\n", full_path_old);
 
+// Based on the suffix, choose the sub-directory.
+			new_dir = (listNum == 1)? image_dir: (listNum == 2)? pdf_dir: "";
+
 			strcpy(full_path_new, download);
 			strcat(full_path_new, new_dir);
 			strcat(full_path_new, event->name);
 
 			printf("New path: \"%s\"\n", full_path_new);
 
+// If the file already exists in subdirectory, change it's name to be unique (only goes up to 99).
 			for(o = 1, isTens = 0; (fd = open(full_path_new, O_RDONLY)) > 0; o++ ){
 				close(fd);
+				if( o == 1 || (o == 10 && (isTens = 1)) ){
+					fd = strlen(endString);
+					strcpy(new_name, event->name);
+					len = strlen(new_name); 
+					if( len + 3 + isTens > 256 ) len = len - 3 - isTens;
 
-				strcpy(new_name, event->name);
+					new_name[len - fd ] = '(';
+					if( isTens ) new_name[len - fd + 1 ] = '0' + (o / 10);
+					new_name[len - fd + 1 + isTens] = '0' + (o % 10);
+					new_name[len - fd + 2 + isTens] = ')';
+					new_name[len - fd + 3 + isTens] = '\0';
+					strcat(new_name, endString);
 
-				isTens = (o/10 > 0)? 1 : 0;
-				fd = strlen(endString);
-				len = strlen(new_name); 
-				if( len + 3 + isTens > 256 ) len = len - 3 - isTens;
-
-				new_name[len - fd ] = '(';
-				if( isTens ) new_name[len - fd + 1 ] = '0' + (o / 10);
-				new_name[len - fd + 1 + isTens] = '0' + (o % 10);
-				new_name[len - fd + 2 + isTens] = ')';
-				new_name[len - fd + 3 + isTens] = '\0';
-
-				strcat(new_name, endString);
-				strcpy(full_path_new, download);
-				strcat(full_path_new, new_dir);
-				strcat(full_path_new, new_name);
+					strcpy(full_path_new, download);
+					strcat(full_path_new, new_dir);
+					strcat(full_path_new, new_name);
+				}
+				else{
+					if( isTens ) full_path_new[len - fd - 2 ] = '0' + (o / 10);
+					full_path_new[len - fd - 1 + isTens] = '0' + (o % 10);
+				}
 			}
-			if( new_name[0] != '\0' ) printf("Name of file changed to: %s\n", new_name);
+
+			if( new_name[0] != '\0' ) printf("Name of file changed to: %s\n", &full_path_new[strlen(download) + strlen(new_dir) + 1] );
 			new_name[0] = '\0';
+// Buffer of one second before moving file to not interrupt other processes
 			sleep(1);
 			rename(full_path_old, full_path_new);
 			printf("Transferred file to /%s in Downloads\n", new_dir);
 		}
 	}
-	perror("Errore nella read dei eventi, boh?");
+	perror("Error at the read of events, inotify instance probably killed");
 	close(inotify_fd);
 	exit(-1);
 }
