@@ -48,7 +48,7 @@ int endsWithResult(char* string, char** listOfStrings, int sizeOfList, char* res
 int main(int argc, char** argv){
 	int wd, inotify_fd;
 	int fd;
-	int len, o, isTens, listNum;
+	int endlen, len, o, isTens, listNum;
 	
 	char *imagesSuffix[] = {".png", ".jpg", ".webp", ".jpeg", ".gif", "svg", 0};
 	int numImageSuffix = 6;
@@ -119,25 +119,33 @@ int main(int argc, char** argv){
 		event = (struct inotify_event*) buffer;
 // This if is kinda useless but why not check.
 		if( event->wd == wd ){
+			//printf("Event: %d , file: %s\n", event->mask, event->name);
+			
 // If the file is a temporary file to facilitate the download we ignore it.
 			if( endsWith(event->name, ".part") || endsWith(event->name, ".tmp") ) continue;
+
 // We store the name of the file created and wait for another event.
 			if( event->mask == IN_CREATE ) {
 				strcpy(toFinish, event->name);
 				continue;
 			}
+
 // If the file we *just* stored the value for was written to, we store that same value at a different variable
 // and wait for another event.
-			if( event->mask == IN_CLOSE_WRITE && !strcmp( event->name, toFinish) ){
+			if( event->mask == IN_CLOSE_WRITE && !strcmp(event->name, toFinish) ){
 				strcpy(toFinishConfirm, toFinish);
 				continue;
 			}
+
 // If the event is that of an attribute change on the file we noticed the behaviour:
 // CREATE->WRITE->ATTRIBUTE_CHANGE
 // Then we assume the file has finished its download sequence.
 // So we can go ahead and check if it fits the conditions to get moved.
-			if( event->mask != IN_ATTRIB || strcmp(event->name, toFinishConfirm) ) continue;
-		}
+			if( !( event->mask == IN_ATTRIB && 
+					( !strcmp(event->name, toFinishConfirm) || !strcmp(event->name,toFinish) )
+				) ) continue;
+		}//if(evnet->wd == wd)
+		 
 // Reset variables.
 		toFinish[0] = '\0';
 		toFinishConfirm[0] = '\0';
@@ -145,7 +153,7 @@ int main(int argc, char** argv){
 		printf("Finished File download detected: \"%s\"\n", event->name);
 // Check if it ends with any relevant suffix.
 		if( (endsWithResult(event->name, imagesSuffix, numImageSuffix, endString) && (listNum = 1)) ||
-				(endsWith(event->name, pdfSufix) && (listNum = 2)) ){
+				(endsWithResult(event->name, &pdfSufix, 1, endString) && (listNum = 2)) ){
 			printf("File is a %s\n", endString);
 
 			strcpy(full_path_old, download);
@@ -166,16 +174,16 @@ int main(int argc, char** argv){
 			for(o = 1, isTens = 0; (fd = open(full_path_new, O_RDONLY)) > 0; o++ ){
 				close(fd);
 				if( o == 1 || (o == 10 && (isTens = 1)) ){
-					fd = strlen(endString);
+					endlen = strlen(endString);
 					strcpy(new_name, event->name);
 					len = strlen(new_name); 
 					if( len + 3 + isTens > 256 ) len = len - 3 - isTens;
 
-					new_name[len - fd ] = '(';
-					if( isTens ) new_name[len - fd + 1 ] = '0' + (o / 10);
-					new_name[len - fd + 1 + isTens] = '0' + (o % 10);
-					new_name[len - fd + 2 + isTens] = ')';
-					new_name[len - fd + 3 + isTens] = '\0';
+					new_name[len - endlen ] = '(';
+					if( isTens ) new_name[len - endlen + 1 ] = '0' + (o / 10);
+					new_name[len - endlen + 1 + isTens] = '0' + (o % 10);
+					new_name[len - endlen + 2 + isTens] = ')';
+					new_name[len - endlen + 3 + isTens] = '\0';
 					strcat(new_name, endString);
 
 					strcpy(full_path_new, download);
@@ -183,12 +191,13 @@ int main(int argc, char** argv){
 					strcat(full_path_new, new_name);
 				}
 				else{
-					if( isTens ) full_path_new[len - fd - 2 ] = '0' + (o / 10);
-					full_path_new[len - fd - 1 + isTens] = '0' + (o % 10);
+					len = strlen(full_path_new);
+					if( isTens ) full_path_new[len - endlen - 2 ] = '0' + (o / 10);
+					full_path_new[len - endlen - 2 + isTens] = '0' + (o % 10);
 				}
 			}
 
-			if( new_name[0] != '\0' ) printf("Name of file changed to: %s\n", &full_path_new[strlen(download) + strlen(new_dir) + 1] );
+			if( new_name[0] != '\0' ) printf("Name of file changed to: %s\n", &full_path_new[strlen(download) + strlen(new_dir) ] );
 			new_name[0] = '\0';
 // Buffer of one second before moving file to not interrupt other processes
 			sleep(1);
